@@ -1,0 +1,10 @@
+{
+  "test_auc": 0.7819,
+  "test_ks": 0.4304,
+  "train_auc": 0.8262,
+  "best_iteration": 289,
+  "n_features": 27,
+  "n_train": 19200,
+  "n_valid": 4800,
+  "n_test": 6000
+}
