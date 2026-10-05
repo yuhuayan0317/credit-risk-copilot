@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from config import ROOT  # noqa: E402
+from config import LLM_MODEL, LLM_PROVIDER, ROOT, ZHIPU_API_KEY  # noqa: E402
 from tools.db import query  # noqa: E402
 
 st.set_page_config(page_title="信贷风险智能分析 Copilot", page_icon="📊", layout="wide")
@@ -33,7 +33,7 @@ def page_agent():
     with st.sidebar:
         st.subheader("设置")
         use_rag = st.toggle("启用 RAG 知识库", value=True)
-        st.caption(f"模型：{os.getenv('LLM_MODEL', 'claude-opus-5-5')}")
+        st.caption(f"模型：{LLM_MODEL}（{LLM_PROVIDER}）")
         st.subheader("示例问题")
         for i, q in enumerate(EXAMPLES):
             if st.button(q, key=f"ex{i}", use_container_width=True):
@@ -42,8 +42,8 @@ def page_agent():
     question = st.text_area("输入业务问题", value=st.session_state.get("question", EXAMPLES[0]), height=80)
     if not st.button("开始分析", type="primary"):
         return
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        st.error("未配置 ANTHROPIC_API_KEY，请在项目根目录的 .env 文件中设置。")
+    if not (ZHIPU_API_KEY if LLM_PROVIDER == "zhipu" else os.getenv("ANTHROPIC_API_KEY")):
+        st.error("未配置 API Key，请在项目根目录的 .env 文件中设置 ZHIPU_API_KEY 或 ANTHROPIC_API_KEY。")
         return
 
     from agent.agent import CreditRiskAgent, Step

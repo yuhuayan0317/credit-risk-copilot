@@ -10,8 +10,17 @@ RESULTS = ROOT / "eval" / "results"
 SYSTEMS = {"baseline": "基础 Prompt", "agent_norag": "Agent（无 RAG）", "agent": "Agent（完整）"}
 CATEGORIES = {"A": "指标取数", "B": "用户分层", "C": "异动归因", "D": "模型调用", "E": "数据质量/口径"}
 
-# 美元 / 百万 tokens：input, output, cache read, cache write（Claude Opus 5.5）
-PRICE = {"input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write": 5.0}
+# 美元 / 百万 tokens：input, output, cache read, cache write；未列出的模型（如智谱 Flash 免费档）按 0 计
+PRICES = {
+    "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write": 5.0},
+    "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.10, "cache_write": 1.25},
+}
+
+
+def _cost(row) -> float:
+    price = PRICES.get(row.get("model", ""), {})
+    return sum(row["usage"].get(k, 0) * p for k, p in price.items()) / 1e6
 
 
 def load(system: str) -> pd.DataFrame | None:
@@ -20,7 +29,7 @@ def load(system: str) -> pd.DataFrame | None:
         return None
     rows = [json.loads(l) for l in path.read_text().splitlines() if l]
     df = pd.DataFrame(rows).drop_duplicates("id", keep="last")
-    df["cost"] = df["usage"].apply(lambda u: sum(u.get(k, 0) * p for k, p in PRICE.items()) / 1e6)
+    df["cost"] = df.apply(_cost, axis=1)
     return df
 
 
@@ -34,7 +43,7 @@ def main():
     rows = []
     for s, d in frames.items():
         rows.append({
-            "方案": SYSTEMS[s], "题数": len(d),
+            "方案": SYSTEMS[s], "模型": d["model"].iloc[0] if "model" in d else "", "题数": len(d),
             "可执行分析成功率": f"{d['success'].mean():.0%}",
             "流程执行完成率": f"{d['executed'].mean():.0%}",
             "平均耗时(秒)": f"{d['elapsed'].mean():.0f}",

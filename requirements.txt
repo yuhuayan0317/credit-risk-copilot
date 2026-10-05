@@ -14,3 +14,4 @@ jieba>=0.42
 rank_bm25>=0.2
 streamlit>=1.40
 matplotlib>=3.8
+openai>=1.50

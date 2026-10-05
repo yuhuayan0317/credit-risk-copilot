@@ -1,11 +1,6 @@
 """评分：数值/关键词检查走规则，开放性结论走 LLM 评审。"""
 import json
-import os
 import re
-
-import anthropic
-
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "claude-sonnet-5-5")
 
 _NUM = re.compile(r"(?<![A-Za-z0-9_.])([-+]?\d+(?:,\d{3})*(?:\.\d+)?)\s*(%|％)?")
 
@@ -14,17 +9,8 @@ JUDGE_SYSTEM = """你是信贷风险分析报告的评审员。根据「评分�
 - 只按评分标准判断，标准中的每一条要求都满足才算通过。
 - 数字允许合理的四舍五入误差（例如 29.54% 写成 29.5% 或 30%）。
 - 表述方式不同但含义一致，视为满足。
-- 报告的结论与参考事实矛盾时，判为不通过。"""
-
-JUDGE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "reason": {"type": "string", "description": "逐条对照评分标准的简要说明"},
-        "passed": {"type": "boolean"},
-    },
-    "required": ["reason", "passed"],
-    "additionalProperties": False,
-}
+- 报告的结论与参考事实矛盾时，判为不通过。
+只输出一个 JSON 对象，不要输出其他内容：{"reason": "逐条对照评分标准的简要说明", "passed": true 或 false}"""
 
 
 def _numbers(text: str) -> list[tuple[float, bool]]:
@@ -53,23 +39,28 @@ def check_contains(answer: str, words: list[str]) -> bool:
     return any(w.lower() in low for w in words)
 
 
-def judge(client: anthropic.Anthropic, question: str, facts: str, rubric: str, answer: str) -> tuple[bool, str]:
-    resp = client.messages.create(
-        model=JUDGE_MODEL,
-        max_tokens=4000,
-        system=JUDGE_SYSTEM,
-        messages=[{"role": "user", "content":
-                   f"业务问题：{question}\n\n参考事实：{facts or '（无）'}\n\n评分标准：{rubric}\n\n待评报告：\n{answer}"}],
-        output_config={"effort": "low", "format": {"type": "json_schema", "schema": JUDGE_SCHEMA}},
-    )
-    if resp.stop_reason == "refusal":
-        return False, "judge refused"
-    text = next(b.text for b in resp.content if b.type == "text")
-    data = json.loads(text)
-    return bool(data["passed"]), data["reason"]
+def parse_judgement(text: str) -> tuple[bool, str]:
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            return bool(data.get("passed")), str(data.get("reason", ""))
+        except json.JSONDecodeError:
+            pass
+    # JSON 解析失败时退化为关键词判断
+    passed = bool(re.search(r'"?passed"?\s*[:：]\s*true', text, re.IGNORECASE))
+    return passed, f"(JSON 解析失败) {text[:200]}"
 
 
-def grade(client: anthropic.Anthropic, q: dict, answer: str) -> dict:
+def judge(backend, question: str, facts: str, rubric: str, answer: str) -> tuple[bool, str]:
+    text, _ = backend.complete(
+        JUDGE_SYSTEM,
+        f"业务问题：{question}\n\n参考事实：{facts or '（无）'}\n\n评分标准：{rubric}\n\n待评报告：\n{answer}",
+        json_mode=True)
+    return parse_judgement(text)
+
+
+def grade(judge_backend, q: dict, answer: str) -> dict:
     details = []
     for c in q["checks"]:
         if c["type"] == "number":
@@ -77,6 +68,6 @@ def grade(client: anthropic.Anthropic, q: dict, answer: str) -> dict:
         elif c["type"] == "contains":
             ok, note = check_contains(answer, c["any"]), f"期望包含 {c['any']}"
         else:
-            ok, note = judge(client, q["question"], q.get("facts", ""), c["rubric"], answer)
+            ok, note = judge(judge_backend, q["question"], q.get("facts", ""), c["rubric"], answer)
         details.append({"type": c["type"], "passed": ok, "note": note})
     return {"passed": all(d["passed"] for d in details), "checks": details}

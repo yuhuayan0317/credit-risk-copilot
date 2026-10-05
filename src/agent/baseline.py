@@ -5,39 +5,26 @@
 import re
 import time
 
-import anthropic
-
 from agent.agent import AgentRun, Step
+from agent.llm import make_backend
 from agent.prompts import BASELINE_ANSWER_SYSTEM, BASELINE_CODE_SYSTEM
-from config import LLM_EFFORT, LLM_MODEL
 from tools.python_runner import UnsafeCodeError, run_python
 
-_CODE_BLOCK = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
+_CODE_BLOCK = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
 
 
 class BaselinePrompt:
-    def __init__(self, model: str = LLM_MODEL, effort: str = LLM_EFFORT,
-                 client: anthropic.Anthropic | None = None):
-        self.client = client or anthropic.Anthropic()
-        self.model = model
-        self.effort = effort
+    def __init__(self, backend=None):
+        self.llm = backend or make_backend()
 
     def _ask(self, run: AgentRun, system: str, content: str) -> str:
-        resp = self.client.beta.messages.create(
-            model=self.model, max_tokens=16000, system=system,
-            messages=[{"role": "user", "content": content}],
-            output_config={"effort": self.effort},
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
-        )
+        text, usage = self.llm.complete(system, content)
         run.n_llm_calls += 1
-        run.usage["input"] += resp.usage.input_tokens or 0
-        run.usage["output"] += resp.usage.output_tokens or 0
-        if resp.stop_reason == "refusal":
-            run.status = "refusal"
-        return "\n".join(b.text for b in resp.content if b.type == "text")
+        run.add_usage(usage)
+        return text
 
     def run(self, question: str) -> AgentRun:
-        run = AgentRun(question=question)
+        run = AgentRun(question=question, model=getattr(self.llm, "model", ""))
         t0 = time.time()
         try:
             reply = self._ask(run, BASELINE_CODE_SYSTEM, question)
@@ -57,8 +44,8 @@ class BaselinePrompt:
             else:
                 run.answer = self._ask(run, BASELINE_ANSWER_SYSTEM,
                                        f"业务问题：{question}\n\n分析代码：\n```python\n{code}\n```\n\n运行结果：\n{output}")
-        except anthropic.APIError as e:
+        except Exception as e:  # noqa: BLE001
             run.status = "api_error"
-            run.answer = f"API 调用失败：{e}"
+            run.answer = f"LLM 调用失败：{type(e).__name__}: {e}"
         run.elapsed = time.time() - t0
         return run

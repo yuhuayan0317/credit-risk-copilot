@@ -6,8 +6,8 @@
 用户问题："信息流广告渠道最近三个月坏账率突然上升，原因是什么？"
         │
    ┌────▼──────┐   检索：指标口径 / 数据字典 / 归因 SOP / 历史案例
-   │  Claude   │◄──── RAG（bge-small-zh 向量 + BM25 混合检索）
-   │  Agent    │
+   │ LLM Agent │◄──── RAG（bge-small-zh 向量 + BM25 混合检索）
+   │           │
    └────┬──────┘
         │  Tool Calling，多轮编排
    ┌────▼───────────────────────────────────────────────┐
@@ -31,6 +31,7 @@
 - **业务口径对齐**：把数据字典、指标口径、标准分层、数据质量规则和历史分析案例做成 RAG 知识库，让模型按业务口径分析，不自己假设
 - **工具编排**：8 个分析工具，覆盖取数、分层、结构拆解、模型评分、SHAP 归因和数据质量检查。工具报错时，模型会根据报错信息自行修正参数并重试
 - **结果可靠性**：三层校验。① 每个工具结果附带自动校验提示；② 坏账率差异做显著性检验，样本量不足时给出提示；③ 最终报告中的每个数字都要能追溯到工具结果，否则打回让模型修正
+- **模型可切换**：自建 LLM 适配层，同一套 Agent 可以在 Claude（Anthropic API）和智谱 GLM（OpenAI 兼容接口）之间切换，默认使用智谱 GLM-4.7-Flash 免费档
 - **安全**：数据库只读、禁止访问外部文件和网络，Python 代码在子进程中执行，并有导入白名单和超时限制
 
 ## 数据与模型
@@ -74,8 +75,8 @@ python src/data_prep.py
 python src/model/train.py
 PYTHONPATH=src python src/rag/retriever.py
 
-# 3. 配置 API Key
-cp .env.example .env   # 填入 ANTHROPIC_API_KEY
+# 3. 配置 API Key（二选一）
+cp .env.example .env   # 填入 ZHIPU_API_KEY（智谱，免费）或 ANTHROPIC_API_KEY
 
 # 4. 运行
 streamlit run src/app.py                                   # 演示界面
@@ -105,4 +106,4 @@ python eval/report.py
 
 ## 技术栈
 
-Python · Claude API（Tool Calling）· DuckDB · XGBoost · SHAP · fastembed（bge-small-zh）· BM25 · Streamlit
+Python · LLM Tool Calling（智谱 GLM / Claude）· DuckDB · XGBoost · SHAP · fastembed（bge-small-zh）· BM25 · Streamlit

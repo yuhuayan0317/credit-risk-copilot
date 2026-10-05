@@ -15,26 +15,26 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import anthropic
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "eval"))
 from agent.agent import CreditRiskAgent  # noqa: E402
 from agent.baseline import BaselinePrompt  # noqa: E402
+from agent.llm import make_backend  # noqa: E402
+from config import JUDGE_MODEL, LLM_PROVIDER  # noqa: E402
 from grader import grade  # noqa: E402
 
 RESULTS = ROOT / "eval" / "results"
 EXECUTED = {"ok", "step_limit"}
 
 
-def make_system(name: str, client):
+def make_system(name: str):
     if name == "agent":
-        return CreditRiskAgent(use_rag=True, client=client)
+        return CreditRiskAgent(use_rag=True)
     if name == "agent_norag":
-        return CreditRiskAgent(use_rag=False, client=client)
+        return CreditRiskAgent(use_rag=False)
     if name == "baseline":
-        return BaselinePrompt(client=client)
+        return BaselinePrompt()
     raise ValueError(name)
 
 
@@ -43,7 +43,8 @@ def main():
     ap.add_argument("--system", required=True, choices=["agent", "agent_norag", "baseline"])
     ap.add_argument("--ids", nargs="*")
     ap.add_argument("--limit", type=int)
-    ap.add_argument("--workers", type=int, default=4)
+    # 智谱免费档并发为 1，默认串行
+    ap.add_argument("--workers", type=int, default=1 if LLM_PROVIDER == "zhipu" else 4)
     args = ap.parse_args()
 
     questions = [json.loads(l) for l in (ROOT / "eval" / "questions.jsonl").read_text().splitlines() if l]
@@ -60,13 +61,13 @@ def main():
     todo = [q for q in questions if q["id"] not in done]
     print(f"[{args.system}] {len(todo)} 题待运行（已完成 {len(done)}）")
 
-    client = anthropic.Anthropic(max_retries=5)
+    judge_backend = make_backend(model=JUDGE_MODEL)
     lock = threading.Lock()
 
     def work(q):
-        run = make_system(args.system, client).run(q["question"])
+        run = make_system(args.system).run(q["question"])
         executed = run.status in EXECUTED and bool(run.answer)
-        g = grade(client, q, run.answer) if executed else {"passed": False, "checks": []}
+        g = grade(judge_backend, q, run.answer) if executed else {"passed": False, "checks": []}
         rec = {"id": q["id"], "category": q["category"], "question": q["question"],
                "executed": executed, "success": executed and g["passed"], "grade": g,
                **{k: v for k, v in run.to_dict().items() if k != "question"}}
