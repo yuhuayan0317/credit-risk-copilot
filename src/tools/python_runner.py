@@ -3,7 +3,7 @@
 
 安全边界：
   - 子进程 + 超时，避免死循环拖垮主进程
-  - 数据库以只读方式打开，禁止外部文件/网络访问
+  - 数据库以只读方式打开，禁止外部文件/网络访问；代码里自行调用 duckdb.connect() 也只会拿到这个只读连接
   - AST 检查：只允许导入白名单模块，禁止 open/exec/eval 等内置函数
 这是本地 demo 级别的隔离，不是生产级沙箱。
 """
@@ -17,7 +17,7 @@ from config import DB_PATH, ROOT
 TIMEOUT_S = 60
 MAX_OUTPUT = 6000
 ALLOWED_IMPORTS = {"pandas", "numpy", "scipy", "math", "statistics", "json", "collections",
-                   "itertools", "datetime", "re", "sklearn", "functools"}
+                   "itertools", "datetime", "re", "sklearn", "functools", "duckdb"}
 FORBIDDEN_NAMES = {"open", "exec", "eval", "compile", "__import__", "input", "globals",
                    "locals", "vars", "breakpoint", "exit", "quit"}
 
@@ -29,6 +29,8 @@ PRELUDE = textwrap.dedent(f"""
     con = duckdb.connect({str(DB_PATH)!r}, read_only=True, config={{"enable_external_access": False}})
     def sql(q):
         return con.execute(q).df()
+    # 模型经常自己写 duckdb.connect(...)：不管传什么参数，都返回同一个只读连接
+    duckdb.connect = lambda *args, **kwargs: con
     del duckdb
 """)
 
