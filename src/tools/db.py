@@ -1,5 +1,6 @@
 """只读数据库访问 + 标准分层口径（与知识库《指标口径》保持一致）。"""
 import re
+import threading
 from functools import lru_cache
 
 import duckdb
@@ -45,11 +46,21 @@ class UnsafeSQLError(ValueError):
     pass
 
 
+_local = threading.local()
+
+
 @lru_cache(maxsize=1)
-def get_con() -> duckdb.DuckDBPyConnection:
+def _base_con() -> duckdb.DuckDBPyConnection:
     # 只读 + 禁止访问外部文件/网络：这是真正的安全边界，下面的正则检查只是提前给出友好报错
     return duckdb.connect(str(DB_PATH), read_only=True,
                           config={"enable_external_access": False})
+
+
+def get_con() -> duckdb.DuckDBPyConnection:
+    # DuckDB 连接不能跨线程并发使用，每个线程用自己的 cursor（评测时多线程并发跑题）
+    if not hasattr(_local, "cur"):
+        _local.cur = _base_con().cursor()
+    return _local.cur
 
 
 def check_select(sql: str) -> str:
