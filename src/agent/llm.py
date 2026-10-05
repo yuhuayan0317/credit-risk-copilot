@@ -5,6 +5,7 @@ LLM 适配层：Agent 主循环只依赖这里定义的统一接口，可以在 
 所以「历史消息怎么追加」也由各自的后端负责，主循环只处理统一的 Turn。
 """
 import json
+import time
 from dataclasses import dataclass, field
 
 from config import LLM_EFFORT, LLM_MODEL, LLM_PROVIDER, ZHIPU_API_KEY, ZHIPU_BASE_URL
@@ -94,9 +95,21 @@ class OpenAICompatBackend:
     def __init__(self, model: str = LLM_MODEL, base_url: str = ZHIPU_BASE_URL,
                  api_key: str = ZHIPU_API_KEY, client=None):
         from openai import OpenAI
-        # 智谱免费档并发为 1，遇到限流时 SDK 会自动退避重试
-        self.client = client or OpenAI(base_url=base_url, api_key=api_key, max_retries=8, timeout=300)
+        self.client = client or OpenAI(base_url=base_url, api_key=api_key, max_retries=1, timeout=300)
         self.model = model
+
+    def _create(self, **kwargs):
+        """免费档经常限流（429）或排队超时，这里用更长的退避时间重试，最多等待约 10 分钟。"""
+        from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+        delay = 5
+        for attempt in range(12):
+            try:
+                return self.client.chat.completions.create(model=self.model, **kwargs)
+            except (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError):
+                if attempt == 11:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 1.6, 60)
 
     @staticmethod
     def convert_tools(tools: list) -> list:
@@ -110,8 +123,7 @@ class OpenAICompatBackend:
         kwargs = {}
         if allow_tools:
             kwargs = {"tools": self.convert_tools(tools), "tool_choice": "auto"}
-        resp = self.client.chat.completions.create(
-            model=self.model, messages=messages, max_tokens=16000, temperature=0.2, **kwargs)
+        resp = self._create(messages=messages, max_tokens=16000, temperature=0.2, **kwargs)
         choice = resp.choices[0]
         msg = choice.message
         u = resp.usage
@@ -152,9 +164,9 @@ class OpenAICompatBackend:
 
     def complete(self, system: str, user: str, json_mode: bool = False) -> tuple[str, dict]:
         extra = {"response_format": {"type": "json_object"}} if json_mode else {}
-        resp = self.client.chat.completions.create(
-            model=self.model, max_tokens=16000, temperature=0.2,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], **extra)
+        resp = self._create(max_tokens=16000, temperature=0.2,
+                            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                            **extra)
         u = resp.usage
         return resp.choices[0].message.content or "", {"input": getattr(u, "prompt_tokens", 0) or 0,
                                                         "output": getattr(u, "completion_tokens", 0) or 0}

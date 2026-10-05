@@ -6,17 +6,19 @@
   - 工具调用轮数上限，到达上限后要求模型直接出报告
   - 最终报告的数字溯源校验，不通过时要求模型修正一次
 """
+import json
 import time
 from dataclasses import dataclass, field
 
 from agent.grounding import ungrounded_numbers
 from agent.llm import make_backend
 from agent.prompts import (AGENT_SYSTEM, AGENT_SYSTEM_NO_RAG, GROUNDING_FEEDBACK,
-                           STEP_LIMIT_NOTE)
+                           NO_DATA_FEEDBACK, STEP_LIMIT_NOTE)
 from tools.registry import TOOLS, execute_tool
 
 MAX_TOOL_ROUNDS = 15
 MAX_GROUNDING_RETRIES = 1
+DATA_TOOLS = {t["name"] for t in TOOLS} - {"search_knowledge"}
 
 
 @dataclass
@@ -71,6 +73,8 @@ class CreditRiskAgent:
         messages = self.llm.new_messages(self.system, question)
         tool_texts: list[str] = []
         rounds = grounding_retries = 0
+        used_data_tool = no_data_nudged = False
+        failed_calls: set[str] = set()   # 失败过的调用，防止模型原样重试
         allow_tools = True
 
         try:
@@ -95,25 +99,37 @@ class CreditRiskAgent:
                     for tc in turn.tool_calls:
                         self._log(run, Step("tool_call", "", tool=tc.name, args=tc.input))
                         ts = time.time()
+                        key = tc.name + json.dumps(tc.input, sort_keys=True, ensure_ascii=False)
                         if tc.parse_error:
                             rendered, is_error, warnings = tc.parse_error + "，请重新调用。", True, []
+                        elif key in failed_calls:
+                            rendered, is_error, warnings = ("这个调用与之前一次失败的调用完全相同，重复执行仍会失败。"
+                                                            "请根据之前的报错修改参数，或换一个工具。"), True, []
                         else:
                             r = execute_tool(tc.name, tc.input)
                             rendered, is_error, warnings = r.render(), r.is_error, r.warnings
+                        if is_error:
+                            failed_calls.add(key)
                         tool_texts.append(rendered)
                         run.n_tool_calls += 1
                         run.n_tool_errors += int(is_error)
                         self._log(run, Step("tool_result", rendered, tool=tc.name, is_error=is_error,
                                             warnings=warnings, elapsed=time.time() - ts))
                         results.append((tc.id, rendered, is_error))
+                        used_data_tool |= tc.name in DATA_TOOLS and not is_error
                     note = None
                     if rounds >= MAX_TOOL_ROUNDS:
                         note, allow_tools, run.status = STEP_LIMIT_NOTE, False, "step_limit"
                     self.llm.add_tool_results(messages, results, note)
                     continue
 
-                # 模型给出了最终回答：做数字溯源校验
+                # 模型给出了最终回答：先检查是否查过数据，再做数字溯源校验
                 answer = turn.text.strip()
+                if not used_data_tool and not no_data_nudged and allow_tools:
+                    no_data_nudged = True
+                    self._log(run, Step("check", "报告没有任何数据查询支撑，已要求重新分析", warnings=["no_data"]))
+                    self.llm.add_user(messages, NO_DATA_FEEDBACK)
+                    continue
                 missing = ungrounded_numbers(answer, tool_texts)
                 self._log(run, Step("check", "数字溯源校验通过" if not missing
                                     else f"未找到依据的数字：{', '.join(missing)}", warnings=missing))

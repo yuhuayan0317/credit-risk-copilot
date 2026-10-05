@@ -14,6 +14,9 @@ from tools import validators as V
 from tools.db import SEGMENT_DIMS, check_filter, query, query_view
 
 MAX_ROWS = 60
+NO_BASE_NOTE = ("\n提示：没有提供对照群体（base_filter），因此只输出了目标群体本身的结果。"
+                "如果要回答「为什么上升/是什么原因」，请重新调用并提供对照群体（例如异动前的月份），"
+                "才能得到两个群体的对比和结构效应/风险效应拆解。")
 
 
 @dataclass
@@ -139,7 +142,7 @@ def segment_compare(dimension: str, target_filter: str, base_filter: str | None 
         out = tgt[["segment", "n", "share", "bad_rate", "avg_score"]]
         overall = tgt["bad"].sum() / tgt["n"].sum()
         text = (f"目标群体：{target_filter}（n={int(tgt['n'].sum())}，坏账率 {overall:.2%}）\n"
-                f"按 {dimension} 分层：\n{_fmt(out)}")
+                f"按 {dimension} 分层：\n{_fmt(out)}{NO_BASE_NOTE}")
         return ToolResult(text, warnings, out)
 
     base = agg(base_filter)
@@ -264,8 +267,8 @@ def shap_compare(target_filter: str, base_filter: str | None = None, top_k: int 
     if not base_filter:
         table = tgt.sort_values("mean_abs_shap", ascending=False).head(top_k)[
             ["feature", "mean_abs_shap", "mean_shap"]]
-        return ToolResult(f"目标群体：{target_filter}（n={nt}）\n特征重要性（按 mean|SHAP| 排序）：\n{_fmt(table)}",
-                          warnings, table)
+        return ToolResult(f"目标群体：{target_filter}（n={nt}）\n特征重要性（按 mean|SHAP| 排序）：\n{_fmt(table)}"
+                          f"{NO_BASE_NOTE}", warnings, table)
 
     base = load(base_filter)
     nb = int(base["n"].iloc[0]) if not base.empty else 0

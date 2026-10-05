@@ -1,5 +1,8 @@
-"""工具定义（给 Claude 的 JSON Schema）与统一分发入口。"""
+"""工具定义（JSON Schema）与统一分发入口。"""
+import re
+
 from tools import analysis as A
+from tools.validators import check_literals
 from tools.db import SEGMENT_DIMS, UnsafeSQLError
 from tools.python_runner import UnsafeCodeError, run_python
 
@@ -108,6 +111,10 @@ TOOLS = [
 
 
 def _dispatch(name: str, args: dict) -> A.ToolResult:
+    # 过滤条件里写了不存在的取值时直接报错，否则会得到空群体并被误读为「没有数据」
+    bad = [p for k in ("target_filter", "base_filter", "filter") if args.get(k) for p in check_literals(args[k])]
+    if bad:
+        return A.ToolResult("过滤条件有误：\n" + "\n".join(bad), is_error=True)
     if name == "search_knowledge":
         return A.search_knowledge(args["query"], int(args.get("top_k") or 4))
     if name == "run_sql":
@@ -137,4 +144,18 @@ def execute_tool(name: str, args: dict) -> A.ToolResult:
     except KeyError as e:
         return A.ToolResult(f"参数缺失或工具不存在：{e}", is_error=True)
     except Exception as e:  # noqa: BLE001 - SQL 语法错误、列名错误等都应反馈给模型
-        return A.ToolResult(f"{type(e).__name__}: {str(e)[:800]}", is_error=True)
+        return A.ToolResult(f"{type(e).__name__}: {str(e)[:800]}{_hint(str(e))}", is_error=True)
+
+
+def _hint(err: str) -> str:
+    """把常见报错翻译成可操作的修改建议。"""
+    m = re.search(r'column "?(\w+)"? not found', err, re.IGNORECASE)
+    if m and m.group(1) in ("risk_score", "risk_level", "dataset"):
+        return f"\n修改建议：{m.group(1)} 在 risk_scores 表中，需要 JOIN risk_scores USING (user_id)。"
+    if m and m.group(1) in SEGMENT_DIMS:
+        return (f"\n修改建议：{m.group(1)} 不是表字段，而是 segment_compare 工具的分层维度。"
+                f"请改用 segment_compare(dimension='{m.group(1)}', target_filter=..., base_filter=...)，"
+                "或在 SQL 中用 CASE WHEN 按知识库的分层口径自己构造。")
+    if m:
+        return "\n修改建议：请对照数据字典检查字段名（可用 search_knowledge 检索「数据字典」）。"
+    return ""

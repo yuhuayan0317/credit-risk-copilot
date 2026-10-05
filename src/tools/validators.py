@@ -19,12 +19,44 @@ _COUNT_COL = re.compile(r"^(n|cnt|count|num|users?|n_users|样本量?|人数|用
                         re.IGNORECASE)
 
 
+KNOWN_VALUES = {
+    "channel": ["APP自然流量", "信息流广告", "合作方导流", "线下门店"],
+    "city_tier": ["一线", "二线", "三线及以下"],
+    "risk_level": ["高", "中", "低"],
+    "dataset": ["train", "valid", "test"],
+}
+_MONTH = re.compile(r"^2025-(0[1-9]|1[0-2])$")
+
+
+def check_literals(sql: str) -> list[str]:
+    """检查 SQL / 过滤条件中的字符串常量是否是该字段真实存在的取值。"""
+    problems = []
+    for col, valid in KNOWN_VALUES.items():
+        pat = rf"\b{col}\s*(?:=|<>|!=)\s*'([^']*)'|\b{col}\s+(?:not\s+)?in\s*\(([^)]*)\)"
+        for eq, in_list in re.findall(pat, sql, re.IGNORECASE):
+            values = [eq] if eq else re.findall(r"'([^']*)'", in_list)
+            for val in values:
+                if val not in valid:
+                    problems.append(f"{col} 不存在取值 '{val}'，有效取值为：{'/'.join(valid)}")
+    for val in re.findall(r"\bloan_month\s*(?:=|<>|!=|>=|<=|>|<)\s*'([^']*)'", sql, re.IGNORECASE):
+        if not _MONTH.match(val):
+            problems.append(f"loan_month 取值 '{val}' 格式不对，应为 '2025-01' ~ '2025-12'")
+    return problems
+
+
 def check_sql_result(sql: str, df: pd.DataFrame) -> list[str]:
-    warnings = []
+    warnings = check_literals(sql)
     if df.empty:
         warnings.append("查询结果为空。请检查过滤条件：loan_month 格式为 'YYYY-MM'，"
                         "channel 取值需完全匹配（APP自然流量/信息流广告/合作方导流/线下门店）。")
         return warnings
+
+    numeric = df.select_dtypes("number")
+    if len(df) == 1 and not numeric.empty and (numeric.isna().all(axis=None) or
+                                               any(_COUNT_COL.search(str(c)) or "count" in str(c).lower()
+                                                   for c in numeric.columns[(numeric == 0).all()])):
+        warnings.append("过滤条件没有匹配到任何记录（计数为 0 或结果为空值），"
+                        "这通常说明过滤条件写错了，而不是数据真的不存在。请先检查字段取值再下结论。")
 
     for col in df.columns:
         s = df[col]
@@ -49,16 +81,42 @@ def check_sql_result(sql: str, df: pd.DataFrame) -> list[str]:
                                 "结论需注明「仅供参考」。")
 
     lowered = sql.lower()
-    if re.search(r"\beducation\b", lowered) and not re.search(r"\b(0|5|6)\b", lowered):
-        warnings.append("涉及 education 字段：存在未定义编码 0/5/6（约 345 人），"
+    # 比率在 0~1 之间却只保留 0~2 位小数，会把 23.7% 变成 0.2，严重失真
+    if _rounds_rate_coarsely(lowered):
+        rate_cols = [c for c in df.columns if _RATE_COL.search(str(c)) and pd.api.types.is_numeric_dtype(df[c])]
+        if any(df[c].between(0, 1).all() for c in rate_cols):
+            warnings.append("比率被 ROUND 到 2 位小数以内，精度严重丢失（例如 0.237 会变成 0.2）。"
+                            "请去掉 ROUND 或保留 4 位小数后重新查询，不要使用当前结果。")
+    if re.search(r"\beducation\b", lowered):
+        warnings.append("education 编码含义：1=研究生，2=本科，3=高中，4=其他；0/5/6 为未定义编码（约 345 人），"
                         "需单独列为「未知」，不能并入有效类别或做业务解读。")
-    if re.search(r"\bmarriage\b", lowered) and "0" not in lowered:
-        warnings.append("涉及 marriage 字段：存在未定义编码 0（54 人），需单独列为「未知」。")
+    if re.search(r"\bmarriage\b", lowered):
+        warnings.append("marriage 编码含义：1=已婚，2=单身，3=其他；0 为未定义编码（54 人），需单独列为「未知」。")
     if re.search(r"\bauc\b|roc", lowered) and "dataset" not in lowered:
         warnings.append("计算模型效果时未限定 dataset = 'test'，结果会包含训练样本，可能高估模型效果。")
     if re.search(r"avg\s*\(\s*bad_rate|avg\s*\(\s*\w*rate", lowered):
         warnings.append("检测到对比率再求平均，这是月度坏账率的简单平均。按口径应使用用户加权的 AVG(is_bad)。")
     return warnings
+
+
+def _rounds_rate_coarsely(sql: str) -> bool:
+    """是否存在 ROUND(<含 is_bad/rate 的表达式>, 0|1|2)。用括号配对解析，正则处理不了嵌套括号。"""
+    for m in re.finditer(r"round\s*\(", sql):
+        depth, i = 1, m.end()
+        while i < len(sql) and depth:
+            depth += {"(": 1, ")": -1}.get(sql[i], 0)
+            i += 1
+        inner = sql[m.end():i - 1]
+        # 最后一个顶层逗号之后是小数位数
+        level, cut = 0, -1
+        for j, ch in enumerate(inner):
+            level += {"(": 1, ")": -1}.get(ch, 0)
+            if ch == "," and level == 0:
+                cut = j
+        if cut >= 0 and inner[cut + 1:].strip() in {"0", "1", "2"} and re.search(r"is_bad|rate|ratio", inner[:cut]):
+            if "100" not in inner[:cut]:
+                return True
+    return False
 
 
 def check_groups_sum(seg: pd.DataFrame, n_col: str, expected_total: int, label: str) -> list[str]:
