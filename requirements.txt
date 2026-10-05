@@ -1,7 +1,14 @@
 pandas>=2.2
 numpy>=1.26
+scipy>=1.13
 scikit-learn>=1.5
 xgboost>=2.1
 shap>=0.46
 duckdb>=1.1
 xlrd>=2.0
+tabulate>=0.9
+anthropic>=1.11
+python-dotenv>=1.0
+fastembed>=0.5
+jieba>=0.42
+rank_bm25>=0.2

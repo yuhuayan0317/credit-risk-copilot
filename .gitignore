@@ -11,3 +11,4 @@ data/processed/*
 !data/processed/.gitkeep
 artifacts/*
 !artifacts/model_metrics.json
+artifacts/embed_cache/

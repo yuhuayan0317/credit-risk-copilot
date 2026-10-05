@@ -4,7 +4,7 @@
 产出：
   artifacts/xgb_model.json      模型
   artifacts/model_metrics.json  AUC / KS 等指标
-  DuckDB 表 risk_scores         user_id, risk_score, risk_level
+  DuckDB 表 risk_scores         user_id, risk_score, risk_level, dataset(train/valid/test)
   DuckDB 表 shap_values         user_id + 每个特征的 SHAP 值（长表）
 """
 import json
@@ -81,8 +81,11 @@ def main() -> None:
 
     # 全量评分 + SHAP，写回数据库
     score = model.predict_proba(X)[:, 1]
+    dataset = pd.Series("train", index=X.index)
+    dataset[X_va.index] = "valid"
+    dataset[X_te.index] = "test"
     scores = pd.DataFrame({"user_id": df["user_id"], "risk_score": score.round(4),
-                           "risk_level": risk_level(score)})
+                           "risk_level": risk_level(score), "dataset": dataset.values})
     sv = shap.TreeExplainer(model).shap_values(X)
     shap_long = (pd.DataFrame(sv, columns=FEATURES)
                  .assign(user_id=df["user_id"].values)
